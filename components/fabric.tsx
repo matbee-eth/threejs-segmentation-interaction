@@ -1,5 +1,5 @@
 "use client";
-import React, { useRef, useMemo, useState, useEffect, Suspense, forwardRef } from "react";
+import React, { useRef, useMemo, useState, useEffect, Suspense } from "react";
 import { Canvas, extend, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
@@ -12,14 +12,8 @@ type GLTFResult = GLTF & {
   nodes: Record<string, THREE.Mesh>;
 };
 
-function Head({
-  onLoad,
-}: {
-  onLoad: (scale: number, geometry: THREE.BufferGeometry) => void;
-}) {
-  const { nodes } = useGLTF(
-    "/EvilScreamingManBaseMesh_1subd.glb"
-  ) as unknown as GLTFResult;
+function Head({ onLoad }: { onLoad: (scale: number) => void }) {
+  const { nodes } = useGLTF("/EvilScreamingManBaseMesh_1subd.glb") as unknown as GLTFResult;
   const meshRef = useRef<THREE.Mesh>(null);
 
   useEffect(() => {
@@ -29,7 +23,7 @@ function Head({
       bbox.getSize(size);
       const maxDimension = Math.max(size.x, size.y, size.z);
       const scale = 2 / maxDimension;
-      onLoad(scale, nodes.EvilScreaminManBaseMesh.geometry);
+      onLoad(scale);
     }
   }, [nodes, onLoad]);
 
@@ -39,158 +33,133 @@ function Head({
   }
 
   return (
-    <mesh
-      ref={meshRef}
-      geometry={nodes.EvilScreaminManBaseMesh.geometry}
-      visible={false}
-    >
+    <mesh ref={meshRef} geometry={nodes.EvilScreaminManBaseMesh.geometry} visible={false}>
       <meshStandardMaterial color="white" transparent opacity={0} />
     </mesh>
   );
 }
 
-interface MembraneProps {
-    headPosition: THREE.Vector3;
-    scale: number;
-    headGeometry: THREE.BufferGeometry;
-  }
-  
-  const Membrane: React.FC<MembraneProps> = ({ headPosition, scale, headGeometry }) => {
-    const meshRef = useRef<THREE.Mesh>(null);
-    const materialRef = useRef<MembraneMaterialType>(null);
-  
-    const gridSize = 200;
-    const membraneSize = 10 * scale;
-  
-    const { positions, originalPositions, velocities } = useMemo(() => {
-      const count = gridSize * gridSize;
-      const pos = new Float32Array(count * 3);
-      const origPos = new Float32Array(count * 3);
-      const vel = new Float32Array(count * 3);
-  
-      for (let i = 0; i < count; i++) {
-        const x = (i % gridSize) / (gridSize - 1) - 0.5;
-        const y = Math.floor(i / gridSize) / (gridSize - 1) - 0.5;
-        const i3 = i * 3;
-        pos[i3] = origPos[i3] = x * membraneSize;
-        pos[i3 + 1] = origPos[i3 + 1] = y * membraneSize;
-        pos[i3 + 2] = origPos[i3 + 2] = 0;
-        vel[i3] = vel[i3 + 1] = vel[i3 + 2] = 0;
-      }
-  
-      return { positions: pos, originalPositions: origPos, velocities: vel };
-    }, [gridSize, membraneSize]);
-  
-    const raycaster = useMemo(() => new THREE.Raycaster(), []);
-    const tempVector = useMemo(() => new THREE.Vector3(), []);
-  
-    useFrame((state, delta) => {
-      if (!meshRef.current || !materialRef.current) return;
-  
+function Membrane({ headPosition, scale }: { headPosition: THREE.Vector3; scale: number }) {
+  const mesh = useRef<THREE.Mesh>(null);
+  const materialRef = useRef<MembraneMaterialType>(null);
+
+  const gridSize = 200;
+  const membraneSize = 10 * scale;
+  const particles = useMemo(() => {
+    const count = gridSize * gridSize;
+    const positions = new Float32Array(count * 3);
+    const originalPositions = new Float32Array(count * 3);
+
+    for (let i = 0; i < count; i++) {
+      const x = (i % gridSize) / (gridSize - 1) - 0.5;
+      const y = Math.floor(i / gridSize) / (gridSize - 1) - 0.5;
+      const i3 = i * 3;
+      positions[i3] = originalPositions[i3] = x * membraneSize;
+      positions[i3 + 1] = originalPositions[i3 + 1] = y * membraneSize;
+      positions[i3 + 2] = originalPositions[i3 + 2] = 0;
+    }
+
+    return { positions, originalPositions };
+  }, [scale, membraneSize]);
+
+  useFrame((state) => {
+    if (materialRef.current && mesh.current) {
       materialRef.current.uTime = state.clock.elapsedTime;
-  
-      const headMesh = new THREE.Mesh(headGeometry);
-      headMesh.position.copy(headPosition);
-      headMesh.updateMatrixWorld();
-  
+
+      const positions = mesh.current.geometry.attributes.position.array as Float32Array;
+      const { originalPositions } = particles;
+
+      const headRadius = 1.5 * scale;
+      const maxPushDistance = 2 * scale;
+      const stiffness = 0.8;
+
       for (let i = 0; i < positions.length; i += 3) {
-        tempVector.set(positions[i], positions[i + 1], positions[i + 2]);
-        raycaster.set(tempVector, new THREE.Vector3(0, 0, -1));
-        const intersects = raycaster.intersectObject(headMesh);
-  
-        if (intersects.length > 0) {
-          const pushDistance = Math.max(0, intersects[0].distance);
-          const targetZ = -pushDistance;
-          const force = (targetZ - positions[i + 2]) * 0.1;
-          velocities[i + 2] += force;
+        const x = positions[i];
+        const y = positions[i + 1];
+        const dx = x - headPosition.x;
+        const dy = y - headPosition.y;
+        const dz = originalPositions[i + 2] - headPosition.z;
+        const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (distance < headRadius + maxPushDistance && headPosition.z > -1.5 * scale) {
+          const pushFactor = Math.pow((headRadius + maxPushDistance - distance) / maxPushDistance, 2);
+          const pushForce = pushFactor * maxPushDistance * (headPosition.z + 1.5 * scale) / (3 * scale);
+          positions[i + 2] = originalPositions[i + 2] + pushForce;
         } else {
-          const restoreForce = (originalPositions[i + 2] - positions[i + 2]) * 0.03;
-          velocities[i + 2] += restoreForce;
+          positions[i + 2] += (originalPositions[i + 2] - positions[i + 2]) * stiffness;
         }
-  
-        velocities[i + 2] *= 0.99; // damping
-        positions[i + 2] += velocities[i + 2];
       }
-  
-      meshRef.current.geometry.attributes.position.needsUpdate = true;
-    });
-  
-    return (
-      <mesh ref={meshRef} position={[0, 0, 0]}>
-        <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            count={positions.length / 3}
-            array={positions}
-            itemSize={3}
-          />
-        </bufferGeometry>
-        <membraneMaterial
-          ref={materialRef}
-          side={THREE.DoubleSide}
-          transparent
-          opacity={0.4}
-          attach="material"
-        />
-      </mesh>
-    );
+
+      mesh.current.geometry.attributes.position.needsUpdate = true;
+    }
+  });
+
+  return (
+    <mesh ref={mesh}>
+      <planeGeometry args={[membraneSize, membraneSize, gridSize - 1, gridSize - 1]} />
+      <membraneMaterial
+        ref={materialRef}
+        side={THREE.DoubleSide}
+        transparent
+        opacity={0.8}
+        attach="material"
+      />
+    </mesh>
+  );
+}
+
+function Scene() {
+  const [headPosition, setHeadPosition] = useState(new THREE.Vector3(0, 0, -2));
+  const [scale, setScale] = useState<number | null>(null);
+  const { camera } = useThree();
+
+  useEffect(() => {
+    if (scale === null) return;
+
+    let animationFrameId: number;
+    let startTime: number | null = null;
+    const animationDuration = 10;
+    const animationDistance = 3 * scale;
+
+    const animate = (timestamp: number) => {
+      if (!startTime) startTime = timestamp;
+      const elapsed = (timestamp - startTime) / 1000;
+      const progress = (elapsed % animationDuration) / animationDuration;
+      const z = Math.sin(progress * Math.PI * 2) * animationDistance - 2 * scale;
+      setHeadPosition(new THREE.Vector3(0, 0, z));
+      animationFrameId = requestAnimationFrame(animate);
+    };
+
+    animationFrameId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [scale]);
+
+  useEffect(() => {
+    if (scale !== null) {
+      camera.position.set(0, 0, 10 * scale);
+      camera.updateProjectionMatrix();
+    }
+  }, [camera, scale]);
+
+  const handleHeadLoad = (headScale: number) => {
+    setScale(headScale);
   };
 
-  function AnimatedHead({ position, rotation, scale, geometry }: {
-    position: THREE.Vector3;
-    rotation: THREE.Euler;
-    scale: number;
-    geometry: THREE.BufferGeometry;
-  }) {
-    return (
-      <mesh position={position} rotation={rotation} scale={[scale, scale, scale]} geometry={geometry}>
+  if (scale === null) {
+    return <Head onLoad={handleHeadLoad} />;
+  }
+
+  return (
+    <>
+      <Membrane headPosition={headPosition} scale={scale} />
+      <mesh scale={[scale, scale, scale]} position={headPosition}>
+        <sphereGeometry args={[1, 32, 32]} />
         <meshStandardMaterial color="pink" transparent opacity={0.7} />
       </mesh>
-    );
-  }
-  
-  function Scene() {
-    const [headPosition, setHeadPosition] = useState(new THREE.Vector3(0, 0, -2));
-    const [headRotation] = useState(new THREE.Euler(Math.PI, 0, 0));
-    const [scale, setScale] = useState<number | null>(null);
-    const [headGeometry, setHeadGeometry] = useState<THREE.BufferGeometry | null>(null);
-  
-    useEffect(() => {
-      if (scale === null) return;
-  
-      let animationFrameId: number;
-      const animate = () => {
-        const time = Date.now() * 0.001;
-        const newZ = Math.sin(time) * 2 - 2; // Oscillate between -4 and 0
-        setHeadPosition(new THREE.Vector3(0, 0, Math.min(newZ, -0.1))); // Prevent going past z=-0.1
-        animationFrameId = requestAnimationFrame(animate);
-      };
-  
-      animationFrameId = requestAnimationFrame(animate);
-      return () => cancelAnimationFrame(animationFrameId);
-    }, [scale]);
-  
-    const handleHeadLoad = (headScale: number, geometry: THREE.BufferGeometry) => {
-      setScale(headScale);
-      setHeadGeometry(geometry);
-    };
-  
-    return (
-      <>
-        <ambientLight intensity={0.2} />
-        <pointLight position={[5, 5, 5]} intensity={0.5} />
-        <Head onLoad={handleHeadLoad} />
-        {scale !== null && headGeometry !== null && (
-          <>
-            <Membrane headPosition={headPosition} scale={scale} headGeometry={headGeometry} />
-            <AnimatedHead position={headPosition} rotation={headRotation} scale={scale} geometry={headGeometry} />
-          </>
-        )}
-      </>
-    );
-  }
-  
-  
+    </>
+  );
+}
+
 export default function MembraneEffect() {
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
